@@ -1,31 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ChatSettingsType } from "@/components/chatSettings";
 
-import { Configuration, OpenAIApi } from "openai";
-
-const openAIConfiguration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-const openai = new OpenAIApi(openAIConfiguration);
-
-const systemPrompt =
-  "너의 이름은 엘리엇이고, 나의 AI 비서야. 친절하고 명랑하게 대답해줘. 고민을 말하면 공감해줘.";
+const GPT_VISION_API_URL = "https://api.openai.com/v1/images/generations";
 
 export async function POST(req: NextRequest) {
-  const { message } = await req.json();
+  const { messages, settings, image } = await req.json();
+  const apiKey = req.headers.get('Authorization')?.split(' ')[1];
 
-  const completion = await openai.createChatCompletion({
-    model: "gpt-3.5-turbo",
-    temperature: 0.7,
-    max_tokens: 512,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: message },
-    ],
-  });
+  if (!apiKey) {
+    return NextResponse.json({ success: false, error: "API key is required" }, { status: 401 });
+  }
 
-  return NextResponse.json({
-    success: true,
-    content: completion?.data?.choices[0]?.message?.content,
-  });
+  if (image) {
+    // Handle image request
+    try {
+      const formData = new FormData();
+      formData.append("file", image);
+
+      const response = await fetch(GPT_VISION_API_URL, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error?.message || "Failed to call GPT-4 Vision API");
+      }
+
+      const data = await response.json();
+      return NextResponse.json({ success: true, content: data });
+    } catch (error: any) {
+      console.error('Error calling GPT-4 Vision API:', error);
+      return NextResponse.json({ 
+        success: false, 
+        error: "Failed to call GPT-4 Vision API", 
+        details: error.message 
+      }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ success: false, error: "No image provided" }, { status: 400 });
 }

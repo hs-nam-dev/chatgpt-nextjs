@@ -1,60 +1,53 @@
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { useState } from "react";
+import React, { useState } from 'react';
 
-export default function InputArea({
-  handleSend,
-  scrollToBottom,
-}: {
-  handleSend: Function;
-  scrollToBottom: Function;
-}) {
-  const [query, setQuery] = useState<string>("");
+interface InputAreaProps {
+  onSendMessage: (message: string) => void;
+  onSendImage: (file: File) => void;
+}
 
-  const send = () => {
-    handleSend(query);
-    scrollToBottom();
-    setQuery("");
+export const InputArea: React.FC<InputAreaProps> = ({ onSendMessage, onSendImage }) => {
+  const [inputValue, setInputValue] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInputValue(e.target.value);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setSelectedFile(e.target.files[0]);
+    }
+  };
+
+  const handleSendClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault(); // 기본적인 폼 제출 방지
+    if (inputValue) {
+      onSendMessage(inputValue);
+      setInputValue(''); // 메시지 전송 후 입력 필드 리셋
+    }
+    if (selectedFile) {
+      onSendImage(selectedFile);
+      setSelectedFile(null); // 이미지 전송 후 선택 파일 초기화
+      // 파일 선택 UI 리셋 (선택한 파일의 상태도 리셋)
+      (document.getElementById('fileInput') as HTMLInputElement).value = '';
+    }
   };
 
   return (
-    <div className="relative block w-full items-end">
-      <div className="flex w-full items-end space-x-0">
-        <Input
-          type="query"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-          }}
-          onKeyPress={(e) => {
-            if (e.key === "Enter") {
-              send(); // Enter 입력이 되면 클릭 이벤트 실행
-            }
-          }}
-          placeholder="Ask any question..."
-          className="rounded-none rounded-l-md focus-visible:ring-0"
-        />
-        <Button
-          type="submit"
-          className="rounded-none rounded-r-md"
-          onClick={send}
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth={1.5}
-            stroke="currentColor"
-            className="h-6 w-6"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"
-            />
-          </svg>
-        </Button>
-      </div>
+    <div className="input-area">
+      <input
+        type="text"
+        value={inputValue}
+        onChange={handleInputChange}
+        placeholder="Type a message..."
+      />
+      <input
+        id="fileInput" // 파일 인풋 필드에 ID 추가
+        type="file"
+        accept="image/*"
+        onChange={handleFileChange}
+      />
+      <button onClick={handleSendClick}>Send</button>
     </div>
   );
-}
+};
