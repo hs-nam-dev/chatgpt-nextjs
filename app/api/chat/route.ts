@@ -1,46 +1,75 @@
-import { NextRequest, NextResponse } from "next/server";
-import { ChatSettingsType } from "@/components/chatSettings";
+import { NextApiRequest, NextApiResponse } from 'next';
+import { SignatureV4 } from '@smithy/signature-v4';
+import { HttpRequest } from '@smithy/protocol-http';
+import { Sha256 } from '@aws-crypto/sha256-js';
 
-const GPT_VISION_API_URL = "https://api.openai.com/v1/images/generations";
+interface HeaderBag {
+  [key: string]: string;
+}
 
-export async function POST(req: NextRequest) {
-  const { messages, settings, image } = await req.json();
-  const apiKey = req.headers.get('Authorization')?.split(' ')[1];
+// NextApiRequest의 headers를 AWS SDK에서 요구하는 형식으로 변환하는 함수
+const convertHeaders = (headers: NextApiRequest['headers']): HeaderBag => {
+    const convertedHeaders: HeaderBag = {};
+    Object.keys(headers).forEach((key) => {
+        const value = headers[key];
+        if (typeof value === 'string') {
+            convertedHeaders[key] = value;
+        } else if (Array.isArray(value)) {
+            convertedHeaders[key] = value.join(','); // 배열인 경우 ','로 결합
+        }
+    });
+    return convertedHeaders;
+};
 
-  if (!apiKey) {
-    return NextResponse.json({ success: false, error: "API key is required" }, { status: 401 });
-  }
-
-  if (image) {
-    // Handle image request
-    try {
-      const formData = new FormData();
-      formData.append("file", image);
-
-      const response = await fetch(GPT_VISION_API_URL, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`
+const getAuthHeaders = async (req: NextApiRequest, region: string, apiKey: string, secretKey: string) => {
+    const signer = new SignatureV4({
+        service: 'bedrock',
+        region: region,
+        credentials: {
+            accessKeyId: apiKey,
+            secretAccessKey: secretKey,
         },
-        body: formData
-      });
+        sha256: Sha256,
+    });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error?.message || "Failed to call GPT-4 Vision API");
-      }
+    const headers = convertHeaders(req.headers);  // 헤더 변환
+    const request = new HttpRequest({
+        method: req.method!.toUpperCase(),
+        headers, // AWS SDK에서 요구하는 형식으로 변환된 headers
+        protocol: 'https',
+        hostname: `bedrock.${region}.amazonaws.com`,
+        path: '/',
+    });
 
-      const data = await response.json();
-      return NextResponse.json({ success: true, content: data });
-    } catch (error: any) {
-      console.error('Error calling GPT-4 Vision API:', error);
-      return NextResponse.json({ 
-        success: false, 
-        error: "Failed to call GPT-4 Vision API", 
-        details: error.message 
-      }, { status: 500 });
+    const signedRequest = await signer.sign(request);
+    return signedRequest.headers;
+};
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+    try {
+        const apiKey = localStorage.getItem('aws_api_key');
+        const secretKey = localStorage.getItem('aws_secret_key');
+        const region = localStorage.getItem('aws_region');
+        
+        if (!apiKey || !secretKey || !region) {
+            return res.status(400).json({ error: 'API key, Secret key, and region must be set in settings.' });
+        }
+
+        const headers = await getAuthHeaders(req, region, apiKey, secretKey);
+        const response = await fetch(`https://bedrock.${region}.amazonaws.com`, {
+            method: 'POST',
+            headers: {
+                ...headers,  // 서명된 요청 헤더 사용
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                input: 'Your input to the Bedrock model',  // 원하는 입력 값을 넣습니다.
+            }),
+        });
+
+        const data = await response.json();
+        res.status(200).json(data);
+    } catch (error) {
+        res.status(500).json({ error: 'Error calling AWS Bedrock API', details: error });
     }
-  }
-
-  return NextResponse.json({ success: false, error: "No image provided" }, { status: 400 });
 }

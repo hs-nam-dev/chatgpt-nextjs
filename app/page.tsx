@@ -1,20 +1,22 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Anthropic from '@anthropic-ai/sdk';
-import { Configuration, OpenAIApi } from 'openai'; // OpenAI SDK의 설정 및 API 임포트
+import { useState } from "react";
+import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
+import { fromEnv } from "@aws-sdk/credential-providers";
 import { SiteHeader } from "@/components/site-header";
-import { InputArea } from "@/components/inputarea";
-import ChatSettings, { ChatSettingsType } from "@/components/chatSettings";
-import SettingTab, { ApiKeys } from "@/components/settingTab";
 import { Button } from "@/components/ui/button";
-import Image from "next/image";
+import SettingTab from "@/components/settingTab";
+import ChatSettings from "@/components/chatSettings";
 
-type MessageContent = { type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+// Custom type definitions
+interface ContentBlock {
+  type: string;
+  text?: string;
+}
 
 interface Message {
   role: 'user' | 'assistant';
-  content: MessageContent | MessageContent[];
+  content: ContentBlock[];
 }
 
 interface Result {
@@ -22,341 +24,188 @@ interface Result {
   response: string;
 }
 
+interface ApiKeys {
+  openai: string;
+  anthropic: string;
+  google: string;
+  awsAccessKey: string;
+  awsSecretKey: string;
+  awsSessionToken: string;
+  awsRegion: string;
+}
+
 const MODEL_OPTIONS = [
   { label: "Claude", value: "claude" },
-  { label: "GPT-4 Vision", value: "gpt-4-vision" } // GPT-4 비전 추가
+  { label: "GPT-4 Vision", value: "gpt-4-vision" }
 ];
 
 export default function IndexPage() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [apiKeys, setApiKeys] = useState<ApiKeys>({
-    openai: '',
-    anthropic: '',
-    google: ''
-  });
-  const [chatSettings, setChatSettings] = useState<ChatSettingsType>({
-    systemPrompt: "", // 기본값 제거
-    temperature: 0.7,
+  const [chatSettings, setChatSettings] = useState({
+    systemPrompt: "",
+    temperature: 0.25,
     topP: 1,
-    maxTokens: 1024,
+    maxTokens: 256,
     frequencyPenalty: 0,
     presencePenalty: 0,
     stopSequences: "",
-    iterations: 1
+    iterations: 2
   });
-  const [displaySetting, setDisplaySetting] = useState(false);
   const [results, setResults] = useState<Result[]>([]);
   const [userInput, setUserInput] = useState("");
-  const [uploadedImage, setUploadedImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState("claude"); // 모델 선택 상태 추가
-
-  const claudeClient = new Anthropic({
-    apiKey: apiKeys.anthropic,
+  const [selectedModel, setSelectedModel] = useState("claude");
+  const [displaySetting, setDisplaySetting] = useState(false);
+  const [apiKeys, setApiKeys] = useState<ApiKeys>({
+    openai: '',
+    anthropic: '',
+    google: '',
+    awsAccessKey: "",
+    awsSecretKey: "",
+    awsSessionToken: "",
+    awsRegion: "us-west-1",
   });
 
-  const openAIConfig = new Configuration({
-    apiKey: apiKeys.openai, // OpenAI API 키 설정
+  const [loading, setLoading] = useState(false);
+
+  // Bedrock 클라이언트 초기화
+  const bedrockClient = new BedrockRuntimeClient({
+    region: apiKeys.awsRegion,
+    credentials: fromEnv(),
   });
-  const openAIClient = new OpenAIApi(openAIConfig); // OpenAI 인스턴스 생성
 
-  const handleInputChange = (value: string) => {
-    setUserInput(value);
-  };
-
-  const handleSend = async () => {
-    if (selectedModel === "claude" && !apiKeys.anthropic) {
-      alert("Anthropic API 키를 설정해주세요.");
-      setDisplaySetting(true);
-      return;
-    } else if (selectedModel === "gpt-4-vision" && !apiKeys.openai) {
-      alert("OpenAI API 키를 설정해주세요.");
-      setDisplaySetting(true);
+  // Claude API 호출 함수
+  const callClaudeAPI = async () => {
+    if (!userInput) {
+      alert("프롬프트를 입력하세요.");
       return;
     }
 
-    if (!chatSettings.systemPrompt) {
-      alert("시스템 프롬프트를 입력하세요.");
-      return;
-    }
+    setLoading(true);
+    setResults([]);
 
-    const newMessages: Message[] = [...messages];
-    let userMessage: Message;
-
-    if (uploadedImage) {
-      const base64Image = await getBase64(uploadedImage);
-      userMessage = {
-        role: "user",
-        content: [
-          { type: "text", text: userInput || "이 이미지를 분석해주세요." },
-          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64Image } }
-        ]
+    try {
+      const input = {
+        modelId: "anthropic.claude-3-sonnet-20240229-v1:0",
+        contentType: "application/json",
+        accept: "application/json",
+        body: JSON.stringify({
+          prompt: `Human: ${userInput}\n\nAssistant:`,
+          max_tokens_to_sample: 1000,
+          temperature: chatSettings.temperature,
+          top_p: chatSettings.topP,
+        }),
       };
-    } else {
-      userMessage = { role: "user", content: { type: "text", text: userInput } };
-    }
 
-    newMessages.push(userMessage);
-    setMessages(newMessages);
+      const command = new InvokeModelCommand(input);
+      const response = await bedrockClient.send(command);
 
-    try {
-      if (selectedModel === "claude") {
-        await sendToClaude(newMessages);
-      } else if (selectedModel === "gpt-4-vision") {
-        await sendToGPT4Vision(newMessages);
-      }
+      const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+      console.log('Full response object:', responseBody);
+
+      setResults([{ 
+        iteration: 1, 
+        response: responseBody.completion || "결과가 없습니다."
+      }]);
+
     } catch (error) {
-      console.error('Unexpected error:', error);
-      setResults([{ iteration: 1, response: "An unexpected error occurred" }]);
-    }
-
-    setUserInput("");
-    setUploadedImage(null);
-    setImagePreview(null);
-  };
-
-  const sendToClaude = async (newMessages: Message[]) => {
-    try {
-      const stream = await claudeClient.messages.stream({
-        model: "claude-3-5-sonnet-20240620", // Claude 모델 설정
-        max_tokens: chatSettings.maxTokens,
-        messages: [
-          { role: "assistant", content: chatSettings.systemPrompt }, // 시스템 프롬프트에 type 제거
-          ...newMessages.map((msg) => ({
-            role: msg.role,
-            content: Array.isArray(msg.content)
-              ? msg.content
-                  .map(c => {
-                    if ('text' in c) {
-                      return c.text; // 텍스트 메시지의 경우
-                    } else if ('source' in c && c.type === 'image') {
-                      return "[Image]"; // 이미지 메시지의 경우, 이미지를 문자열로 표시 (필요시 다른 처리)
-                    }
-                  })
-                  .join("\n")
-              : 'text' in msg.content
-              ? msg.content.text
-              : "[Image]", // 텍스트 메시지 또는 이미지 처리
-          }))
-        ],
-        temperature: chatSettings.temperature,
-        top_p: chatSettings.topP,
-      });
-  
-      let accumulatedResponse = '';
-      for await (const messageStreamEvent of stream) {
-        if (messageStreamEvent.type === 'content_block_delta') {
-          const delta = messageStreamEvent.delta;
-      
-          // delta가 TextDelta 타입인지 확인 (text 속성이 있는지 확인)
-          if ('text' in delta) {
-            accumulatedResponse += delta.text; // text 속성이 있을 때만 추가
-          } else {
-            console.warn("Unknown delta type", delta);
-          }
-      
-          setResults([{ iteration: 1, response: accumulatedResponse }]);
-        }
-      }
-      const finalMessage = await stream.finalMessage();
-      if (finalMessage.content.length > 0) {
-        const contentBlock = finalMessage.content[0];
-      
-        // contentBlock에 text 속성이 있는지 확인
-        if ('text' in contentBlock) {
-          setResults([{ iteration: 1, response: contentBlock.text }]);
-        } else {
-          // text 속성이 없을 때는 다른 처리를 할 수 있습니다.
-          console.warn("Content block does not contain text:", contentBlock);
-          setResults([{ iteration: 1, response: "[Non-text content]" }]); // 비텍스트 콘텐츠에 대한 기본 처리
-        }
-      }
-      if (finalMessage.content.length > 0) {
-        const contentBlock = finalMessage.content[0];
-      
-        // contentBlock에 text 속성이 있는지 확인
-        if ('text' in contentBlock) {
-          newMessages.push({ 
-            role: "assistant", 
-            content: { type: "text", text: contentBlock.text } // 텍스트 메시지를 처리
-          });
-        } else {
-          // text 속성이 없을 때는 다른 처리를 할 수 있습니다.
-          console.warn("Content block does not contain text:", contentBlock);
-          newMessages.push({ 
-            role: "assistant", 
-            content: { type: "text", text: "[Non-text content]" } // 비텍스트 콘텐츠에 대한 기본 처리
-          });
-        }
-      
-        setMessages(newMessages); // 최종 메시지 상태 업데이트
-      }
-      
-    } catch (error) {
-      if (error instanceof Anthropic.APIError) {
-        console.error('API Error:', error.status, error.name, error.error);
-      } else {
-        console.error('Unexpected error:', error);
-        setResults([{ iteration: 1, response: "An unexpected error occurred" }]);
-      }
+      console.error("Claude API 호출 중 오류 발생:", error);
+      setResults([{ iteration: 1, response: "API 호출 중 오류가 발생했습니다." }]);
+    } finally {
+      setLoading(false);
     }
   };
-  
-  // GPT-4 Vision API 호출을 처리하는 함수
-  const sendToGPT4Vision = async (newMessages: Message[]) => {
-    try {
-      const response = await openAIClient.createChatCompletion({
-        model: "gpt-4", // GPT-4 비전 모델 설정
-        messages: [
-          { role: "system", content: chatSettings.systemPrompt },
-          ...newMessages.map((msg) => {
-            // msg.content가 배열인지 단일 객체인지 확인
-            const contentArray = Array.isArray(msg.content) ? msg.content : [msg.content];
-  
-            // 텍스트 콘텐츠를 추출
-            const contentText = contentArray.map(c => {
-              if ('text' in c) {
-                return c.text; // 텍스트일 경우
-              } else if ('source' in c && c.type === 'image') {
-                return "[Image]"; // 이미지일 경우
-              }
-              return '';
-            }).join("\n");
-  
-            return {
-              role: msg.role,
-              content: contentText // 추출된 텍스트 콘텐츠
-            };
-          })
-        ],
-        temperature: chatSettings.temperature,
-        top_p: chatSettings.topP,
-        max_tokens: chatSettings.maxTokens,
-        functions: uploadedImage ? [{ name: "image_analysis", description: "Analyze uploaded images" }] : undefined, // 이미지 분석 함수 추가
-        function_call: uploadedImage ? { name: "image_analysis" } : undefined
-      });
-  
-      const responseText = response.data.choices[0].message?.content || "No response";
-      setResults([{ iteration: 1, response: responseText }]);
-      newMessages.push({ role: "assistant", content: { type: "text", text: responseText } });
-      setMessages(newMessages);
-    } catch (error) {
-      console.error('OpenAI API Error:', error);
-      setResults([{ iteration: 1, response: "An error occurred with OpenAI" }]);
-    }
-  };
-  
 
   const handleApiKeysChange = (newApiKeys: ApiKeys) => {
     setApiKeys(newApiKeys);
     localStorage.setItem('apiKeys', JSON.stringify(newApiKeys));
   };
 
-  const handleChatSettingsChange = (newSettings: ChatSettingsType) => {
+  const handleChatSettingsChange = (newSettings: typeof chatSettings) => {
     setChatSettings(newSettings);
   };
 
-  const handleSettingClick = () => {
-    setDisplaySetting(true);
-  };
-
-  const handleHomeClick = () => {
-    setDisplaySetting(false);
-  };
-
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      setUploadedImage(file);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const getBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => {
-        const base64String = reader.result as string;
-        resolve(base64String.split(',')[1]);
-      };
-      reader.onerror = error => reject(error);
-    });
-  };
-
-  const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setSelectedModel(e.target.value); // 선택된 모델 업데이트
-  };
-
-  useEffect(() => {
-    const savedApiKeys = localStorage.getItem('apiKeys');
-    if (savedApiKeys) {
-      setApiKeys(JSON.parse(savedApiKeys));
-    }
-  }, []);
-
   return (
     <div className="flex flex-col h-screen">
-      <SiteHeader onSettingClick={handleSettingClick} onHomeClick={handleHomeClick} />
+      <SiteHeader onSettingClick={() => setDisplaySetting(true)} onHomeClick={() => setDisplaySetting(false)} />
       <div className="flex-1 flex overflow-hidden">
         {displaySetting ? (
           <div className="w-full p-4">
-            <SettingTab onApiKeyChange={handleApiKeysChange} apiKeys={apiKeys} />
+            <SettingTab apiKeys={apiKeys} />
           </div>
         ) : (
-          <>
-            <div className="w-2/3 flex flex-col p-4">
-              <div className="mb-4 flex justify-between items-center">
-                <select onChange={handleModelChange} value={selectedModel}>
-                  {MODEL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageUpload}
-                  className="ml-4"
-                />
-              </div>
-              <div className="mb-4">
+          <div className="flex-1 p-4 flex">
+            <div className="w-2/3 p-4">
+              <div>
+                <h3 className="text-lg font-bold mb-2">프롬프트 반복 테스트</h3>
                 <textarea
                   value={chatSettings.systemPrompt}
-                  onChange={(e) => setChatSettings({...chatSettings, systemPrompt: e.target.value})}
-                  className="w-full p-2 border rounded"
-                  rows={3}
-                  placeholder="Enter system prompt"
+                  onChange={(e) => setChatSettings({ ...chatSettings, systemPrompt: e.target.value })}
+                  className="w-full h-40 p-2 border rounded-lg mb-4"
+                  placeholder="SYSTEM"
                 />
-              </div>
-              {imagePreview && (
-                <div className="mb-4">
-                  <Image src={imagePreview} alt="Uploaded" width={200} height={200} />
+                <div className="flex items-center mb-4">
+                  <label className="mr-2">모델:</label>
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="border p-2 rounded-lg"
+                  >
+                    {MODEL_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              )}
-              <InputArea 
-                onSendMessage={handleInputChange} // 메시지를 처리하는 함수
-                onSendImage={handleSend} // 이미지를 처리하는 함수
-              />
-              <Button onClick={handleSend} className="mt-4">Send</Button>
-              <div className="mt-4 overflow-y-auto max-h-96">
-                {results.map((result, index) => (
-                  <div key={index} className="mb-4">
-                    <strong>Response {result.iteration}:</strong>
-                    <p>{result.response}</p>
-                  </div>
-                ))}
+              </div>
+
+              <div className="h-96 border rounded-lg mb-4 p-4 overflow-y-auto bg-gray-100">
+                History Area
+              </div>
+
+              <div className="flex items-center">
+                <input
+                  type="text"
+                  className="border flex-1 p-2 rounded-lg mr-4"
+                  placeholder="Enter user message..."
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                />
+                <Button onClick={callClaudeAPI} disabled={loading}>
+                  {loading ? "실행 중..." : "추가"}
+                </Button>
+              </div>
+
+              <div className="mt-8">
+                <h3 className="text-lg font-bold mb-2">반복 결과</h3>
+                <table className="table-auto w-full border-collapse border border-gray-300">
+                  <thead>
+                    <tr className="bg-gray-200">
+                      <th className="border border-gray-300 p-2">Iteration</th>
+                      <th className="border border-gray-300 p-2">Response</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.map((result) => (
+                      <tr key={result.iteration}>
+                        <td className="border border-gray-300 p-2 text-center">{result.iteration}</td>
+                        <td className="border border-gray-300 p-2">{result.response}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
-            <div className="w-1/3 border-l border-gray-200 overflow-auto p-4">
+
+            <div className="w-1/3 border-l p-4">
               <ChatSettings settings={chatSettings} onSettingsChange={handleChatSettingsChange} />
+              <div className="mt-4">
+                <Button onClick={callClaudeAPI} className="w-full" disabled={loading}>
+                  {loading ? "실행 중..." : "실행하기"}
+                </Button>
+              </div>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>
